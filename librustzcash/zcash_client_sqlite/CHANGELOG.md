@@ -7,6 +7,17 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Fixed
+
+- `v_transactions.expired_unmined` is a boolean for every row. It was NULL for an unmined
+  transaction with no recorded expiry, which a `bool` reader rejects, and which a lenient reader
+  took as "not expired". A received transaction that a reorg un-mined and the new chain never
+  re-mined is such a row (compact-block scanning learns no expiry, and nothing fetches one for a
+  transaction that left the chain), so history showed it as pending indefinitely while the
+  balance had stopped counting it. The flag now applies the balance's rule to an unknown expiry:
+  the transaction has expired once the default expiry delta, counted from the height it was
+  built for or first observed at, has passed. A migration redefines the view.
+
 ## [0.1.0-rc9.4] - 2026-10-23
 
 ### Changed

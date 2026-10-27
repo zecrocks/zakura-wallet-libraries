@@ -8757,6 +8757,47 @@ mod tests {
             vec![(orphaned_value, None), (new_value, Some(b + 5))]
         );
 
+        // The orphaned receipt has no expiry: compact-block scanning learns none, and nothing
+        // fetches one for a transaction that left the chain. History reads it as unexpired,
+        // as `false` rather than NULL, until the default expiry delta from the height it was
+        // first seen at (`b + 4`) has passed.
+        let orphan_expired = |st: &TestState<_, crate::testing::db::TestDb, _>| -> Option<bool> {
+            st.wallet()
+                .conn()
+                .query_row(
+                    "SELECT expired_unmined FROM v_transactions WHERE mined_height IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(orphan_expired(&st), Some(false));
+        let delta = zcash_primitives::transaction::builder::NU7_DEFAULT_TX_EXPIRY_DELTA;
+        // The tip is `b + 5`; the receipt expires once the tip reaches `b + 4 + delta`.
+        for _ in 0..(delta - 2) {
+            st.generate_empty_block();
+        }
+        st.scan_cached_blocks(b + 6, (delta - 2) as usize);
+        assert_eq!(
+            max_block_height(st.wallet().conn()),
+            Some(b + 4 + delta - 1)
+        );
+        assert_eq!(orphan_expired(&st), Some(false));
+        st.generate_empty_block();
+        st.scan_cached_blocks(b + 4 + delta, 1);
+        assert_eq!(orphan_expired(&st), Some(true));
+        let account = st.test_account().unwrap().id();
+        let orphan = st
+            .wallet()
+            .db()
+            .transaction_history_summaries(account)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.mined_height.is_none())
+            .unwrap();
+        assert!(orphan.expired_unmined);
+        assert_eq!(orphan.expiry_height, None);
+
         // No block up to `b + 3` on the new branch has an output, so a second shallow reorg
         // again rewinds to the birthday tree state.
         assert_eq!(st.wallet_mut().truncate_to_height(b + 3).unwrap(), b - 1);

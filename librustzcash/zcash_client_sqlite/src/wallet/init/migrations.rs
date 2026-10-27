@@ -79,6 +79,7 @@ mod v_address_uses_ironwood;
 mod v_received_output_spends_account;
 mod v_sapling_shard_unscanned_ranges;
 mod v_transactions_additional_totals;
+mod v_transactions_expired_unmined_fallback;
 mod v_transactions_legacy_projection;
 mod v_transactions_net;
 mod v_transactions_note_uniqueness;
@@ -200,6 +201,7 @@ pub mod ids {
         v_received_output_spends_account::MIGRATION_ID as V_RECEIVED_OUTPUT_SPENDS_ACCOUNT,
         v_sapling_shard_unscanned_ranges::MIGRATION_ID as V_SAPLING_SHARD_UNSCANNED_RANGES,
         v_transactions_additional_totals::MIGRATION_ID as V_TRANSACTIONS_ADDITIONAL_TOTALS,
+        v_transactions_expired_unmined_fallback::MIGRATION_ID as V_TRANSACTIONS_EXPIRED_UNMINED_FALLBACK,
         v_transactions_legacy_projection::MIGRATION_ID as V_TRANSACTIONS_LEGACY_PROJECTION,
         v_transactions_net::MIGRATION_ID as V_TRANSACTIONS_NET,
         v_transactions_note_uniqueness::MIGRATION_ID as V_TRANSACTIONS_NOTE_UNIQUENESS,
@@ -443,6 +445,7 @@ pub(super) fn all_migrations<
         Box::new(transparent_detail_content_failures::Migration),
         Box::new(one_time_ivk_discovery::Migration),
         Box::new(one_time_pir::Migration),
+        Box::new(v_transactions_expired_unmined_fallback::Migration),
     ]
 }
 
@@ -702,10 +705,8 @@ pub(crate) fn forget_txid_enhancement(conn: &rusqlite::Connection) {
 }
 
 /// Leaf migrations as of the current repository state.
-pub const CURRENT_LEAF_MIGRATIONS: &[Uuid] = &[
-    transparent_detail_content_failures::MIGRATION_ID,
-    one_time_pir::MIGRATION_ID,
-];
+pub const CURRENT_LEAF_MIGRATIONS: &[Uuid] =
+    &[v_transactions_expired_unmined_fallback::MIGRATION_ID];
 
 pub(super) fn verify_network_compatibility<P: consensus::Parameters>(
     conn: &rusqlite::Connection,
@@ -835,6 +836,7 @@ pub(crate) mod tests {
             ids::ONE_TIME_IVK,
             ids::ONE_TIME_IVK_DISCOVERY,
             ids::ONE_TIME_PIR,
+            ids::V_TRANSACTIONS_EXPIRED_UNMINED_FALLBACK,
             ids::ORCHARD_IRONWOOD_MIGRATION_ANCHOR_INTERVAL,
             ids::ORCHARD_IRONWOOD_MIGRATION_TABLES,
             ids::ORCHARD_IRONWOOD_MIGRATION_UNSATISFIABILITY,
