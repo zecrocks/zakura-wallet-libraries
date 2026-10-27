@@ -46,8 +46,9 @@ pub struct TransactionSummary {
     pub memo_count: u32,
     /// Mined block's Unix timestamp, if its block is known locally.
     pub block_time: Option<u64>,
-    /// Whether an unmined transaction has a recorded expiry at or below the highest local block.
-    /// Missing or zero expiry does not establish expiration.
+    /// Whether an unmined transaction can no longer be mined: its recorded expiry is at or below
+    /// the highest local block, or, with no recorded expiry, the default expiry delta from the
+    /// height it was built for or first observed at has passed. A zero expiry never expires.
     pub expired_unmined: bool,
     /// Count of recorded owned inputs.
     pub spent_note_count: u32,
@@ -261,10 +262,26 @@ SELECT accounts.uuid                AS account_uuid,
        SUM(notes.received_count)         AS received_note_count,
        SUM(notes.memo_present) + MAX(COALESCE(sent_note_counts.memo_count, 0)) AS memo_count,
        blocks.time                       AS block_time,
-       (
+       -- An unmined transaction that can no longer be mined. With a recorded expiry (the
+       -- transaction's own, or private history metadata's), that expiry is at or below the
+       -- highest local block; zero never expires. Without one, the default expiry delta counted
+       -- from the height the transaction was built for, or first observed at, has passed: the
+       -- rule the balance applies to an unmined transaction. 120 is the NU7 default; for a
+       -- pre-NU7 transaction it errs late, never early. IFNULL keeps the flag a boolean when
+       -- there are no local blocks.
+       IFNULL(
             transactions.mined_height IS NULL
-            AND transactions.expiry_height BETWEEN 1 AND blocks_max_height.max_height
-       ) AS expired_unmined,
+            AND CASE
+                WHEN COALESCE(transactions.expiry_height, (SELECT history_expiry_height
+                     FROM ironwood_enhance_routing WHERE transaction_id = transactions.id_tx AND route = 0))
+                     IS NOT NULL
+                THEN COALESCE(transactions.expiry_height, (SELECT history_expiry_height
+                     FROM ironwood_enhance_routing WHERE transaction_id = transactions.id_tx AND route = 0))
+                     BETWEEN 1 AND blocks_max_height.max_height
+                ELSE COALESCE(transactions.target_height, transactions.min_observed_height) + 120
+                     <= blocks_max_height.max_height
+            END,
+       0) AS expired_unmined,
        SUM(notes.spent_note_count) AS spent_note_count,
        (
             -- All of the wallet-spent and wallet-received notes are consistent with a
@@ -333,6 +350,8 @@ mod tests {
     use zcash_client_backend::data_api::{Account as _, testing::TestBuilder};
     use zcash_primitives::block::BlockHash;
 
+    use zcash_primitives::transaction::TxId;
+
     use super::read_summary;
     use crate::{AccountUuid, error::SqliteClientError, testing::db::TestDbFactory};
 
@@ -360,6 +379,107 @@ mod tests {
         assert!(matches!(
             db.transaction_history_summaries(AccountUuid::from_uuid(uuid::Uuid::nil())),
             Err(SqliteClientError::AccountUnknown)
+        ));
+    }
+
+    /// The rows this flag is for: a received transaction a reorg un-mined and the new chain never
+    /// re-mined has no mined height and no expiry (compact-block scanning learns none, and nothing
+    /// fetches one for a transaction that left the chain), only the height it was first seen at.
+    /// The view used to yield NULL for it, which a `bool` reader rejects, and `false` once read
+    /// leniently, so history showed it pending for good while the balance had stopped counting it.
+    #[test]
+    fn expired_unmined_is_never_null_and_falls_back_to_the_default_expiry() {
+        let st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let db = st.wallet().db();
+        let conn = &db.conn;
+        let account = st.test_account().unwrap().id();
+        let account_id: i64 = conn
+            .query_row(
+                "SELECT id FROM accounts WHERE uuid = ?1",
+                [account.expose_uuid().as_bytes()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        const TIP: u32 = 1000;
+        conn.execute(
+            "INSERT INTO blocks (height, hash, time, sapling_tree) VALUES (?1, zeroblob(32), 0, X'00')",
+            [TIP],
+        )
+        .unwrap();
+        // (tag, mined_height, expiry_height, target_height, min_observed_height, expired)
+        let cases: &[(u8, Option<u32>, Option<u32>, Option<u32>, u32, bool)] = &[
+            // Unknown expiry: the NU7 default delta from the observation height has passed.
+            (0xa0, None, None, None, TIP - 120, true),
+            // One block short of it.
+            (0xa1, None, None, None, TIP - 119, false),
+            // The height the transaction was built for counts before the observation height.
+            (0xa2, None, None, Some(TIP - 120), TIP - 10, true),
+            (0xa3, None, None, Some(TIP - 119), TIP - 300, false),
+            // A known expiry: at the tip it has expired, past the tip it has not; zero never does.
+            (0xa4, None, Some(TIP), None, TIP - 300, true),
+            (0xa5, None, Some(TIP + 1), None, TIP - 300, false),
+            (0xa6, None, Some(0), None, TIP - 300, false),
+            // Mined transactions are never expired, whatever their expiry says.
+            (0xa7, Some(TIP - 1), None, None, TIP - 300, false),
+            (0xa8, Some(TIP - 1), Some(TIP - 2), None, TIP - 300, false),
+        ];
+        for (tag, mined, expiry, target, observed, _) in cases {
+            conn.execute(
+                "INSERT INTO transactions (txid, mined_height, expiry_height, target_height, min_observed_height)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![[*tag; 32], mined, expiry, target, observed],
+            )
+            .unwrap();
+            let tx = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO sapling_received_notes (transaction_id, output_index, account_id, diversifier, value, rcm, is_change)
+                 VALUES (?1, 0, ?2, zeroblob(11), 1000, zeroblob(32), 0)",
+                params![tx, account_id],
+            )
+            .unwrap();
+        }
+        let check = |label: &str, blocks_known: bool| {
+            let summaries = db.transaction_history_summaries(account).unwrap();
+            for (tag, _, _, _, _, expired) in cases {
+                let s = summaries
+                    .iter()
+                    .find(|s| s.txid == TxId::from_bytes([*tag; 32]))
+                    .unwrap();
+                assert_eq!(
+                    s.expired_unmined,
+                    *expired && blocks_known,
+                    "{label}: case {tag:#x}"
+                );
+            }
+            // The view column itself is a boolean for every row, never NULL.
+            let nulls: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM v_transactions WHERE expired_unmined IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(nulls, 0, "{label}");
+        };
+        check("at the tip", true);
+        // Without any local block nothing has expired, and the flag is still a boolean.
+        conn.execute("DELETE FROM blocks", []).unwrap();
+        check("no blocks", false);
+    }
+
+    /// The view's fallback delta is a literal in SQL. It must stay the NU7 default expiry delta
+    /// the balance's unexpired condition uses for the same case.
+    #[test]
+    fn the_view_fallback_delta_is_the_nu7_default_expiry_delta() {
+        assert_eq!(
+            zcash_primitives::transaction::builder::NU7_DEFAULT_TX_EXPIRY_DELTA,
+            120
+        );
+        assert!(super::VIEW_TRANSACTIONS.contains(
+            "COALESCE(transactions.target_height, transactions.min_observed_height) + 120"
         ));
     }
 
