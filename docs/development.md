@@ -23,6 +23,7 @@ python3 scripts/dev.py verify
 | --- | --- |
 | `default` | Workspace except the facade, the PIR client and the one-time IVK scenarios; default features |
 | `sync` | Ordinary sync with Orchard and Ironwood enabled |
+| `tor` | Embedded Tor, HTTP deadlines and exchange queries, with TLS lightwalletd |
 | `zewif` | Wallet interchange import and atomic rollback, with the SQLite test fixtures |
 | `orchard` | Backend + SQLite; `orchard,test-dependencies` |
 | `transparent` | Backend + SQLite; `orchard,transparent-inputs,test-dependencies,unstable` |
@@ -161,9 +162,11 @@ checks, and publishes a final `tests` result. The exception is
 `one-time-ivk-scenarios`, which takes about 45 minutes on a hosted runner, so the
 **One-time IVK scenarios** workflow runs it nightly and on demand instead of on
 PRs. Documentation/guidance-only PRs run lightweight checks. Unknown file types conservatively trigger full checks.
-Older revisions of the same PR cancel; main runs remain independent. Compiler
-and configuration specific caches accelerate compilation without retaining the
-fresh external-consumer lockfiles.
+Older runs of the same PR or branch cancel, including superseded main pushes.
+Nightly/manual checks also supersede older runs for the same ref; publishing
+remains serialized without cancellation. Compiler and configuration specific
+caches retain dependency and workspace-crate build outputs, including useful
+outputs from failed checks, without retaining fresh external-consumer lockfiles.
 
 A passing focused check does not prove all privacy, migration, protocol, or
 feature combinations; use their affected lanes and final CI. Keep process-local
@@ -201,15 +204,15 @@ must configure this Trusted Publisher on crates.io:
 Use `python3 scripts/publish-crates.py --plan` to list the selected names and versions.
 Check every crate's publisher settings, including names already reserved by a
 placeholder release. Trusted Publishing needs existing crate names.
-Before a release, reserve the five new `zakura-pir-{protocol,client,publisher,query-server,server-core}`
-names and configure their Trusted Publishers. The packaging POC itself does not
-publish crates or change publisher settings. No permanent API token or new Infisical secret is required.
+The five `zakura-pir-{protocol,client,publisher,query-server,server-core}` names
+are registered and have been published through this workflow. No permanent API
+token or new Infisical secret is required.
 
 `zakura-service-config` and `zakura-pir-config` are also selected for release,
-in dependency order after any packages they use. Before their first release,
-publish each reserved `0.0.0` placeholder from `zakura-core/reserved` and configure
-the same Trusted Publisher for each crate: owner `zakura-core`, repository
-`wallet-libraries`, workflow `publish-crates.yml`, and environment `crates-io`.
+in dependency order after any packages they use. Both `0.0.0` placeholders are registered on crates.io. Before their first
+implementation release, an owner must configure the same Trusted Publisher for
+each crate: owner `zakura-core`, repository `wallet-libraries`, workflow
+`publish-crates.yml`, and environment `crates-io`.
 A reservation merged into `zakura-core/reserved` does not register the name on
 crates.io until the placeholder is published. Trusted Publishing can only be
 configured after that initial publication. The `verify` workflow's successful
