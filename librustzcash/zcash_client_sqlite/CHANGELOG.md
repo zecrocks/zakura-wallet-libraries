@@ -7,6 +7,14 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Changed
+
+- `WalletDb` answers `AddressStore::address_range_present` from its `addresses` table, so
+  the backend's gap regeneration (`generate_transparent_gap_addresses`, run on every stored
+  transaction and transparent output) skips deriving and upserting a gap limit of unified
+  addresses that are already stored, as the crate's own `generate_gap_addresses` has since
+  the gap-probe change. The result is unchanged.
+
 ## [0.1.0-rc9.8] - 2026-11-11
 
 ### Fixed

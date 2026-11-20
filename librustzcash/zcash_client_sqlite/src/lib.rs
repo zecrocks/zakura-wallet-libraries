@@ -5001,6 +5001,15 @@ impl<'a, C: Borrow<rusqlite::Transaction<'a>>, P: consensus::Parameters, CL: Clo
             list,
         )
     }
+
+    fn address_range_present(
+        &self,
+        account_id: Self::AccountRef,
+        key_scope: TransparentKeyScope,
+        range: core::ops::Range<NonHardenedChildIndex>,
+    ) -> Result<bool, Self::Error> {
+        wallet::transparent::address_range_present(self.conn.borrow(), account_id, key_scope, range)
+    }
 }
 
 #[cfg(feature = "orchard")]
